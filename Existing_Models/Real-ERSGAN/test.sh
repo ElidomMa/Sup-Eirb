@@ -1,0 +1,47 @@
+#!/bin/bash
+# Lance un test Real-ESRGAN et écrit la config de la machine
+# et le temps moyen d'inférence par image dans results.txt
+
+TEST_OUTPUT=$(mktemp)
+trap 'rm -f "$TEST_OUTPUT"' EXIT
+RESULTS_FILE="results.txt"
+
+{
+    echo "Machine:"
+    echo "Date    : $(date)"
+    echo "CPU     : $(lscpu | grep 'Model name' | sed 's/Model name: *//')"
+    echo "Coeurs  : $(nproc)"
+    echo "RAM     : $(free -h | awk '/Mem/ {print $2}')"
+    if command -v nvidia-smi > /dev/null; then
+        echo "GPU     : $(nvidia-smi --query-gpu=name --format=csv,noheader)"
+    else
+        echo "Pas de GPU"
+    fi
+    echo "PyTorch : $(python -c 'import torch; print(torch.__version__)')"
+    echo ""
+    echo "Résultats:"
+
+    for S in 2 4; do
+        MODEL="RealESRGAN_x4plus"
+        if [[ "$S" -eq 2 ]]; then
+            MODEL="RealESRGAN_x2plus"
+        fi
+
+        if ! python inference_realesrgan.py \
+            -i ../../Images/test/LR_X${S} \
+            -o results/x${S} \
+            -n "$MODEL" \
+            -s "$S" \
+            --gt ../../Images/test/HR \
+            --fp32 > "$TEST_OUTPUT" 2>&1; then
+            cat "$TEST_OUTPUT"
+            exit 1
+        fi
+
+        TEMPS=$(grep -oP 'Average inference time: \K[0-9.]+' "$TEST_OUTPUT")
+        SSIM=$(grep -oP '# ssim: \K[0-9.]+' "$TEST_OUTPUT")
+        PSNR=$(grep -oP '# psnr: \K[0-9.]+' "$TEST_OUTPUT")
+
+        echo "x${S}: ${TEMPS} ms/image, SSIM: ${SSIM}, PSNR: ${PSNR} dB"
+    done
+} > "$RESULTS_FILE"

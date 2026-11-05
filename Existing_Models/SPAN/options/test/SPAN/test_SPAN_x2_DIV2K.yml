@@ -1,0 +1,42 @@
+name: SPAN_x2_DIV2K
+model_type: SRModel
+scale: 2
+num_gpu: auto
+manual_seed: 0
+
+datasets:
+  test_1:
+    name: test_SPAN_x2_DIV2K
+    type: PairedImageDataset
+    dataroot_gt: Images/test/HR
+    dataroot_lq: Images/test/LR_X2
+    filename_tmpl: '{}x2'
+    io_backend:
+      type: disk
+
+network_g:
+  type: SPAN
+  num_in_ch: 3
+  num_out_ch: 3
+  feature_channels: 52
+  upscale: 2
+  img_range: 255.
+  rgb_mean: [0.4488, 0.4371, 0.4040]
+
+path:
+  pretrain_network_g: models/spanx2_ch52.pth
+  strict_load_g: true
+  param_key_g: params
+
+val:
+  save_img: true
+  suffix: ~
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: false

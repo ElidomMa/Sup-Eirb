@@ -1,0 +1,43 @@
+name: EDSR_Mx2_local
+model_type: SRModel
+scale: 2
+num_gpu: auto
+manual_seed: 0
+
+datasets:
+  test_1:
+    name: DIV2K_valid_x2
+    type: PairedImageDataset
+    dataroot_gt: Images/test/HR
+    dataroot_lq: Images/test/LR_X2
+    filename_tmpl: '{}x2'
+    io_backend:
+      type: disk
+
+network_g:
+  type: EDSR
+  num_in_ch: 3
+  num_out_ch: 3
+  num_feat: 64
+  num_block: 16
+  upscale: 2
+  res_scale: 1
+  img_range: 255.
+  rgb_mean: [0.4488, 0.4371, 0.4040]
+
+path:
+  pretrain_network_g: models/edsrx2.pth
+  strict_load_g: true
+
+val:
+  save_img: false
+  suffix: ~
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 2
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 2
+      test_y_channel: false
