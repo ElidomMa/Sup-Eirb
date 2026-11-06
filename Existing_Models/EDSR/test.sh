@@ -21,7 +21,7 @@ RESULTS_FILE="results.txt"
     echo "Résultats:"
 
     for S in 2 3 4; do
-        if ! python basicsr/test.py -opt options/test/EDSR/test_EDSR_x${S}_DIV2K.yml > "$TEST_OUTPUT" 2>&1; then
+        if ! PYTHONPATH="$PWD" python basicsr/test.py -opt options/test/EDSR/test_EDSR_x${S}_DIV2K.yml > "$TEST_OUTPUT" 2>&1; then
             cat "$TEST_OUTPUT"
             exit 1
         fi
