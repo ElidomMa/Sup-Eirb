@@ -3,7 +3,7 @@
 Bicubique vs U-Net sur les 100 images de DIV2K valid (x4).
 
 Usage (dans le même dossier que unet.py) :
-    python eval.py --root data/DIV2K --ckpt checkpoints/unet_x4_best.pt
+    python eval.py --root ../../Images --ckpt checkpoints/x4/unet_x4_best.pt
 Résultats : affichés + enregistrés dans results.csv (une ligne par image).
 """
 import argparse
@@ -86,10 +86,19 @@ def main():
     ap.add_argument("--reps", type=int, default=10, help="répétitions pour mesurer le temps")
     ap.add_argument("--fp16", action="store_true", help="inférence en demi-précision")
     ap.add_argument("--csv", default="results.csv")
+    ap.add_argument("--out", default=None, help="dossier des images super-résolues")
     args = ap.parse_args()
+
+    data_root = args.root
+    if not os.path.isdir(os.path.join(data_root, "HR")):
+        test_root = os.path.join(data_root, "test")
+        if os.path.isdir(os.path.join(test_root, "HR")):
+            data_root = test_root
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     s = args.scale
+    output_dir = args.out or os.path.join("results", f"x{s}")
+    os.makedirs(output_dir, exist_ok=True)
     model = UNetSR(s, args.base, args.depth).to(device)
     model.load_state_dict(torch.load(args.ckpt, map_location=device))
     model.eval()
@@ -102,13 +111,15 @@ def main():
     def run_bic(x):
         return F.interpolate(x, scale_factor=s, mode="bicubic", align_corners=False)
 
-    hr_paths = sorted(glob.glob(os.path.join(args.root, "DIV2K_valid_HR", "*.png")))
+    hr_paths = sorted(glob.glob(os.path.join(data_root, "HR", "*.png")))
+    if not hr_paths:
+        ap.error(f"Aucune image trouvée dans {data_root}/HR")
     name = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
     print(f"Device : {name} | précision : {'FP16' if dtype == torch.float16 else 'FP32'} | "
           f"{len(hr_paths)} images\n")
 
     # échauffement (le 1er passage GPU est toujours lent)
-    lr0 = load(os.path.join(args.root, "DIV2K_valid_LR_bicubic", f"X{s}",
+    lr0 = load(os.path.join(data_root, f"LR_X{s}",
                             os.path.basename(hr_paths[0]).replace(".png", f"x{s}.png")), device)
     for _ in range(10):
         run_model(lr0)
@@ -117,11 +128,13 @@ def main():
     rows = []
     for p in hr_paths:
         i = os.path.basename(p)[:-4]
-        lr = load(os.path.join(args.root, "DIV2K_valid_LR_bicubic", f"X{s}", f"{i}x{s}.png"), device)
+        lr = load(os.path.join(data_root, f"LR_X{s}", f"{i}x{s}.png"), device)
         hr = load(p, device)[..., :lr.shape[-2] * s, :lr.shape[-1] * s]
 
         bic, t_bic = timed(run_bic, lr, device, args.reps)
         sr, t_sr = timed(run_model, lr, device, args.reps)
+        sr_image = (sr[0].clamp(0, 1).mul(255).byte().permute(1, 2, 0).cpu().numpy())
+        Image.fromarray(sr_image).save(os.path.join(output_dir, f"{i}.png"))
         pb, sb = metrics(bic, hr, s)
         pu, su = metrics(sr, hr, s)
         rows.append((i, hr.shape[-1], hr.shape[-2], pb, sb, pu, su, t_bic, t_sr))

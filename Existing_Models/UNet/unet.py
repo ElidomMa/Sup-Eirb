@@ -2,10 +2,8 @@
 U-Net pour la super-résolution sur DIV2K (PyTorch).
 
 Arborescence attendue dans --root :
-    DIV2K_train_HR/0001.png ...
-    DIV2K_train_LR_bicubic/X4/0001x4.png ...
-    DIV2K_valid_HR/0801.png ...
-    DIV2K_valid_LR_bicubic/X4/0801x4.png ...
+    HR/0801.png ...
+    LR_X4/0801x4.png ...
 
 Exemples :
     python unet_sr_div2k.py --root data/DIV2K --scale 4
@@ -31,8 +29,8 @@ from torch.utils.data import DataLoader, Dataset
 # ----------------------------------------------------------------------------
 class DIV2K(Dataset):
     def __init__(self, root, split, scale, patch=48, repeat=1, n_max=None):
-        hr_dir = os.path.join(root, f"DIV2K_{split}_HR")
-        lr_dir = os.path.join(root, f"DIV2K_{split}_LR_bicubic", f"X{scale}")
+        hr_dir = os.path.join(root, split, "HR")
+        lr_dir = os.path.join(root, split, f"LR_X{scale}")
         self.hr = sorted(glob.glob(os.path.join(hr_dir, "*.png")))[:n_max]
         self.lr = [os.path.join(lr_dir, os.path.basename(p).replace(".png", f"x{scale}.png"))
                    for p in self.hr]
@@ -210,7 +208,7 @@ def main():
         return
 
     train_set = DIV2K(args.root, "train", args.scale, args.patch, repeat=20)
-    val_set = DIV2K(args.root, "valid", args.scale, n_max=args.n_val)
+    val_set = DIV2K(args.root, "test", args.scale, n_max=args.n_val)
     train_loader = DataLoader(train_set, args.batch, shuffle=True, num_workers=args.workers,
                               pin_memory=True, drop_last=True, persistent_workers=args.workers > 0)
     val_loader = DataLoader(val_set, 1, num_workers=2)
