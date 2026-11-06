@@ -188,8 +188,10 @@ def main():
                 gt_paths = glob.glob(os.path.join(args.gt, f'{gt_name}.*'))
                 if gt_paths:
                     gt_img = cv2.imread(gt_paths[0], cv2.IMREAD_COLOR)
-                    psnr_values.append(calculate_psnr(output, gt_img, crop_border=int(args.outscale)))
-                    ssim_values.append(calculate_ssim(output, gt_img, crop_border=int(args.outscale)))
+                    psnr_values.append(calculate_psnr(
+                        output, gt_img, crop_border=int(args.outscale), test_y_channel=True))
+                    ssim_values.append(calculate_ssim(
+                        output, gt_img, crop_border=int(args.outscale), test_y_channel=True))
 
     if inference_times:
         average_inference_time = sum(inference_times) / len(inference_times)
