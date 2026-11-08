@@ -1,4 +1,4 @@
-name: SPAN_x2_DIV2K
+name: SPAN_x3_DIV2K
 model_type: SRModel
 scale: 3
 num_gpu: auto

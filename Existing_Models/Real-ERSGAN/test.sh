@@ -27,13 +27,13 @@ RESULTS_FILE="results.txt"
             MODEL="RealESRGAN_x2plus"
         fi
 
-        if ! python inference_realesrgan.py \
+        if ! SUPEIRB_PROGRESSION=1 python inference_realesrgan.py \
             -i ../../Images/test/LR_X${S} \
             -o results/x${S} \
             -n "$MODEL" \
             -s "$S" \
             --gt ../../Images/test/HR \
-            --fp32 > "$TEST_OUTPUT" 2>&1; then
+            --fp32 3>&2 > "$TEST_OUTPUT" 2>&1; then
             cat "$TEST_OUTPUT"
             exit 1
         fi

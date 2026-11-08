@@ -20,6 +20,13 @@ from realesrgan import RealESRGANer
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 
 
+def afficher_progression(message):
+    if os.environ.get('SUPEIRB_PROGRESSION') == '1':
+        os.write(3, (message + '\n').encode())
+    else:
+        print(message, flush=True)
+
+
 def main():
     """Inference demo for Real-ESRGAN.
     """
@@ -145,9 +152,12 @@ def main():
     inference_times = []
     psnr_values = []
     ssim_values = []
+    afficher_progression(f'x{args.outscale:g} : début du test ({len(paths)} images)')
     for idx, path in enumerate(paths):
         imgname, extension = os.path.splitext(os.path.basename(path))
         print('Testing', idx, imgname)
+        if (idx + 1) % 20 == 0 or idx + 1 == len(paths):
+            afficher_progression(f'x{args.outscale:g} : {idx + 1}/{len(paths)} images')
 
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if len(img.shape) == 3 and img.shape[2] == 4:

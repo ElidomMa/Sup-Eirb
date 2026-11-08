@@ -10,7 +10,15 @@ from basicsr.utils import get_root_logger, imwrite, tensor2img
 from basicsr.utils.registry import MODEL_REGISTRY
 from .base_model import BaseModel
 
+import os
 import time
+
+
+def afficher_progression(message):
+    if os.environ.get('SUPEIRB_PROGRESSION') == '1':
+        os.write(3, (message + '\n').encode())
+    else:
+        print(message, flush=True)
 
 
 @MODEL_REGISTRY.register()
@@ -202,6 +210,8 @@ class SRModel(BaseModel):
         if use_pbar:
             pbar = tqdm(total=len(dataloader), unit='image')
 
+        nb_images = len(dataloader)
+        afficher_progression(f"x{self.opt['scale']} : début du test ({nb_images} images)")
         for idx, val_data in enumerate(dataloader):
             img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
             self.feed_data(val_data)
@@ -250,6 +260,8 @@ class SRModel(BaseModel):
             if use_pbar:
                 pbar.update(1)
                 pbar.set_description(f'Test {img_name}')
+            if (idx + 1) % 20 == 0 or idx + 1 == nb_images:
+                afficher_progression(f"x{self.opt['scale']} : {idx + 1}/{nb_images} images")
         if use_pbar:
             pbar.close()
 
