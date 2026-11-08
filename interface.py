@@ -227,6 +227,11 @@ class ModelSelectionDialog(QDialog):
         self.second.currentTextChanged.connect(self._update_scales)
         self._update_scales()
         form = QVBoxLayout(self)
+        if len(names) < 2:
+            form.addWidget(QLabel(
+                "Moins de deux modèles fonctionnels ont été trouvés dans corrections.\n"
+                "Ajoutez les poids entraînés et leurs adaptateurs validés, puis relancez."
+            ))
         form.addWidget(QLabel("Premier modèle"))
         form.addWidget(self.first)
         form.addWidget(QLabel("Deuxième modèle"))
@@ -235,11 +240,18 @@ class ModelSelectionDialog(QDialog):
         form.addWidget(self.scale)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                    QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setEnabled(len(names) >= 2 and bool(self.scale.count()))
+        buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         form.addWidget(buttons)
 
     def _update_scales(self) -> None:
+        if not self.first.currentText() or not self.second.currentText():
+            self.scale.clear()
+            if hasattr(self, "ok_button"):
+                self.ok_button.setEnabled(False)
+            return
         common = sorted(set(supported_scales(self.first.currentText())) &
                         set(supported_scales(self.second.currentText())))
         current = self.scale.currentData()
@@ -248,6 +260,16 @@ class ModelSelectionDialog(QDialog):
             self.scale.addItem(f"×{value}", value)
         if current in common:
             self.scale.setCurrentIndex(common.index(current))
+        if hasattr(self, "ok_button"):
+            self.ok_button.setEnabled(self.first.currentText() != self.second.currentText()
+                                      and bool(common))
+
+    def _accept(self) -> None:
+        if self.first.currentText() == self.second.currentText() or not self.scale.count():
+            QMessageBox.warning(self, "Modèles indisponibles",
+                                "Choisissez deux modèles différents avec un facteur commun.")
+            return
+        self.accept()
 
     def selection(self) -> tuple[str, str, int]:
         return self.first.currentText(), self.second.currentText(), int(self.scale.currentData())
@@ -352,7 +374,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
         layout.addLayout(controls)
         layout.addWidget(splitter, 1)
-        self.metrics = QLabel("Capture : -- FPS | Bicubique : -- FPS | ESPCN : -- FPS")
+        self.metrics = QLabel("Capture : -- FPS | Modèle 1 : -- FPS | Modèle 2 : -- FPS")
         layout.addWidget(self.metrics)
         layout.addWidget(self.welcome)
         layout.addWidget(self.status)
@@ -591,7 +613,8 @@ class MainWindow(QMainWindow):
         self.status.setText("Image fixe prête. Utilisez la molette sur un panneau pour zoomer.")
         self.metrics.setText(f"Référence : {self.fixed_original.shape[1]}×{self.fixed_original.shape[0]} | "
                              f"Réduction : {self.fixed_size[0]}×{self.fixed_size[1]} | "
-                             f"Différence ESPCN/Bicubique : MAE {mae:.2f} | max {maximum} | "
+                             f"Différence {self.model_names[1]}/{self.model_names[0]} : "
+                             f"MAE {mae:.2f} | max {maximum} | "
                              f"{different:.2f}% pixels différents")
 
     def change_zoom(self, multiplier: float) -> None:
@@ -619,8 +642,9 @@ class MainWindow(QMainWindow):
         self.showing_difference = not self.showing_difference
         if self.showing_difference:
             self.right.set_static(difference_image(self.fixed_bicubic, self.fixed_espcn),
-                                  "Différences amplifiées | ESPCN - Bicubique")
-            self.diff_button.setText("Afficher ESPCN")
+                                  f"Différences amplifiées | {self.model_names[1]} - "
+                                  f"{self.model_names[0]}")
+            self.diff_button.setText(f"Afficher {self.model_names[1]}")
         else:
             self.right.set_static(self.fixed_espcn, f"{self.model_names[1]} ×{self.scale}")
             self.diff_button.setText("Afficher les différences")
@@ -689,7 +713,7 @@ class MainWindow(QMainWindow):
         except CancelledError:
             return
         except ModelError as exc:
-            self.status.setText(f"Erreur Bicubique : {exc}")
+            self.status.setText(f"Erreur {self.model_names[0]} : {exc}")
             return
         now = time.perf_counter()
         self.left.set_result(image, milliseconds, now, size)
@@ -705,7 +729,7 @@ class MainWindow(QMainWindow):
         except CancelledError:
             return
         except ModelError as exc:
-            self.status.setText(f"Erreur ESPCN : {exc}")
+            self.status.setText(f"Erreur {self.model_names[1]} : {exc}")
             return
         now = time.perf_counter()
         self.right.set_result(image, milliseconds, now, size)
@@ -715,8 +739,8 @@ class MainWindow(QMainWindow):
     def _update_metrics(self) -> None:
         capture_fps = len(self.capture_times)
         self.metrics.setText(f"Capture réelle : {capture_fps} FPS | "
-                            f"Bicubique affiché : {self.left.fps_value} FPS | "
-                            f"ESPCN affiché : {self.right.fps_value} FPS | "
+                            f"{self.model_names[0]} affiché : {self.left.fps_value} FPS | "
+                            f"{self.model_names[1]} affiché : {self.right.fps_value} FPS | "
                             f"Mode : {'synchronisé' if self.sync_mode else 'temps réel'}")
 
     def _schedule_next(self, executor: ThreadPoolExecutor, name: str, processed: Frame) -> None:

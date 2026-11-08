@@ -1,6 +1,4 @@
 import unittest
-from unittest.mock import patch
-
 import cv2
 import numpy as np
 
@@ -8,38 +6,24 @@ from interface import (CAPTURE_RATES, Frame, RESOLUTIONS, difference_image,
                        image_metrics, pixel_difference_metrics,
                        prepare_fixed_image, resize_for_model)
 from sequence import image_paths
-from super_resolution import (Bicubic, ModelError, _check_image,
-                              supported_scales)
+from super_resolution import (ModelError, _check_image, available_model_names,
+                              correction_checkpoints, model_inventory)
 
 
 class CoreTests(unittest.TestCase):
-    def test_bicubic_is_x2(self):
-        image = np.zeros((10, 12, 3), dtype=np.uint8)
-        result, elapsed = Bicubic().upscale(image)
-        self.assertEqual(result.shape, (20, 24, 3))
-        self.assertGreaterEqual(elapsed, 0)
-
-    def test_bicubic_supports_real_factors(self):
-        image = np.zeros((10, 12, 3), dtype=np.uint8)
-        for scale in (2, 3, 4):
-            result, _ = Bicubic(scale).upscale(image)
-            self.assertEqual(result.shape, (10 * scale, 12 * scale, 3))
-
-    def test_bicubic_matches_opencv(self):
-        image = np.random.default_rng(1).integers(0, 256, (8, 9, 3), dtype=np.uint8)
-        result, _ = Bicubic().upscale(image)
-        expected = cv2.resize(image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        np.testing.assert_array_equal(result, expected)
-
     def test_invalid_image_is_rejected(self):
         with self.assertRaises(ModelError):
             _check_image(np.zeros((4, 4), dtype=np.uint8))
 
-    def test_cuda_is_not_silently_replaced(self):
-        from super_resolution import ESPCN
-        with patch("onnxruntime.get_available_providers", return_value=["CPUExecutionProvider"]):
-            with self.assertRaisesRegex(ModelError, "CUDAExecutionProvider"):
-                ESPCN()
+    def test_only_models_with_corrections_weights_are_listed(self):
+        self.assertEqual(available_model_names(), ())
+        self.assertEqual(correction_checkpoints(), ())
+
+    def test_corrections_inventory_is_explicit(self):
+        inventory = model_inventory()
+        self.assertEqual(set(inventory), {"EDSR", "SPAN", "Real-ESRGAN", "UNet"})
+        for metadata in inventory.values():
+            self.assertEqual(metadata["weights"], ())
 
     def test_processing_sizes_are_exact_and_aspect_safe(self):
         image = np.zeros((900, 1600, 3), dtype=np.uint8)
@@ -47,12 +31,6 @@ class CoreTests(unittest.TestCase):
             with self.subTest(label=label):
                 result = resize_for_model(image, size)
                 self.assertEqual(result.shape[:2], (size[1], size[0]))
-
-    def test_same_low_resolution_can_feed_both_methods(self):
-        image = np.random.default_rng(2).integers(0, 256, (720, 1280, 3), dtype=np.uint8)
-        low = resize_for_model(image, (320, 180))
-        result, _ = Bicubic().upscale(low)
-        self.assertEqual(result.shape, (360, 640, 3))
 
     def test_capture_rates_and_frame_identity_are_explicit(self):
         self.assertEqual(CAPTURE_RATES, {"5 FPS": 5, "10 FPS": 10, "15 FPS": 15,
@@ -88,10 +66,6 @@ class CoreTests(unittest.TestCase):
         self.assertAlmostEqual(mae, 60 / 12)
         self.assertEqual(maximum, 30)
         self.assertAlmostEqual(percentage, 25.0)
-
-    def test_model_scale_capabilities_are_not_faked(self):
-        self.assertEqual(supported_scales("Bicubique"), (2, 3, 4))
-        self.assertEqual(supported_scales("ESPCN"), (2,))
 
     def test_sequence_paths_are_numerically_sorted(self):
         import tempfile
