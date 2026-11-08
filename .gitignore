@@ -5,3 +5,8 @@ __pycache__/
 .pytest_cache/
 artifacts/
 *.part
+# Poids locaux volumineux
+Existing_Models/*/models/
+Existing_Models/*/weights/
+Existing_Models/UNet/checkpoints/
+test_data/

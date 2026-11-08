@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import time
 from typing import Protocol
 
 import numpy as np
@@ -43,33 +42,56 @@ def correction_checkpoints() -> tuple[Path, ...]:
 
 
 def available_model_names() -> tuple[str, ...]:
-    """Ne propose aucun modèle sans adaptateur et poids vérifiables."""
-    # La branche corrections actuellement récupérée ne contient aucun checkpoint.
-    # Un modèle n'est ajouté ici qu'après intégration d'un adaptateur testable.
-    return ()
+    return tuple(name for name in ("EDSR", "SPAN", "U-Net")
+                 if supported_scales(name))
 
 
 def supported_scales(name: str) -> tuple[int, ...]:
-    raise ModelError(f"Modèle de corrections indisponible: {name}.")
+    weights = {
+        "EDSR": (2, 3, 4),
+        "SPAN": (2, 3, 4),
+        "U-Net": (2, 3, 4),
+    }
+    return tuple(scale for scale in weights.get(name, ())
+                 if _weight_path(name, scale).is_file()
+                 and _weight_path(name, scale).stat().st_size > 0)
 
 
 def create_processor(name: str, scale: int) -> Processor:
-    raise ModelError(
-        f"Le modèle {name} ne peut pas être chargé: aucun poids entraîné "
-        "et adaptateur validé provenant de corrections."
-    )
+    if scale not in supported_scales(name):
+        raise ModelError(f"{name} ne possède pas de poids valides pour x{scale}.")
+    from model_adapters import EDSRProcessor, SPANProcessor, UNetProcessor
+    processors = {"EDSR": EDSRProcessor, "SPAN": SPANProcessor, "U-Net": UNetProcessor}
+    try:
+        return processors[name](scale, _weight_path(name, scale))
+    except KeyError as exc:
+        raise ModelError(f"Modèle inconnu: {name}.") from exc
+
+
+def _weight_path(name: str, scale: int) -> Path:
+    paths = {
+        "EDSR": CORRECTIONS_ROOT / "EDSR" / "models" / f"edsrx{scale}.pth",
+        "SPAN": CORRECTIONS_ROOT / "SPAN" / "models" / f"spanx{scale}_ch52.pth",
+        "U-Net": CORRECTIONS_ROOT / "UNet" / "checkpoints" / f"x{scale}" /
+        f"unet_x{scale}_best.pt",
+    }
+    return paths.get(name, Path(""))
 
 
 def model_inventory() -> dict[str, dict[str, object]]:
-    """Décrit les familles présentes dans corrections, sans les déclarer utilisables."""
+    """Décrit les familles et les poids présents localement."""
     return {
-        "EDSR": {"architecture": "EDSR", "scales": (2, 3, 4), "weights": ()},
-        "SPAN": {"architecture": "SPAN", "scales": (2, 3, 4), "weights": ()},
-        "Real-ESRGAN": {"architecture": "Real-ESRGAN", "scales": (4,), "weights": ()},
-        "UNet": {"architecture": "UNet", "scales": (2, 3, 4), "weights": ()},
+        "EDSR": {"architecture": "EDSR", "scales": (2, 3, 4),
+                 "weights": tuple(_weight_path("EDSR", s).name for s in (2, 3, 4)
+                                  if _weight_path("EDSR", s).is_file())},
+        "SPAN": {"architecture": "SPAN", "scales": (2, 3, 4),
+                 "weights": tuple(_weight_path("SPAN", s).name for s in (2, 3, 4)
+                                  if _weight_path("SPAN", s).is_file())},
+        "Real-ESRGAN": {"architecture": "Real-ESRGAN", "scales": (2, 4),
+                        "weights": tuple(path.name for path in sorted(
+                            (CORRECTIONS_ROOT / "Real-ERSGAN" / "weights").glob("*.pth")
+                        ))},
+        "UNet": {"architecture": "UNet", "scales": (2, 3, 4),
+                 "weights": tuple(_weight_path("U-Net", s).name for s in (2, 3, 4)
+                                  if _weight_path("U-Net", s).is_file())},
     }
-
-
-def inference_time(started: float) -> float:
-    """Convertit une mesure monotone en millisecondes."""
-    return (time.perf_counter() - started) * 1000

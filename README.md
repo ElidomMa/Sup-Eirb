@@ -85,14 +85,23 @@ F11 active ou désactive le plein écran. Le séparateur vertical peut être dé
 ## État de la branche corrections
 
 `origin/corrections` contient les familles EDSR, SPAN, Real-ESRGAN et UNet.
-Elle contient actuellement du code, des configurations et des dépendances,
-mais aucun fichier de poids `.pth`, `.pt`, `.onnx`, `.ckpt` ou
-`.safetensors`. Aucun modèle n'est donc déclaré utilisable par l'application.
-Les anciens modèles locaux ne sont volontairement plus proposés.
+Les poids fournis séparément par l'équipe sont stockés localement dans
+`Existing_Models/` et ignorés par Git. EDSR, SPAN et UNet sont chargés par
+des adaptateurs simples et validés par inférence réelle. Real-ESRGAN possède
+des poids x2/x4, mais la branche `corrections` ne fournit pas son architecture
+RRDBNet complète; il n'est donc pas proposé comme modèle fonctionnel.
 
-Les facteurs indiqués dans les configurations sont EDSR x2/x3/x4, SPAN
-x2/x3/x4, Real-ESRGAN x4 et UNet x2/x3/x4. Ils ne seront proposés qu'après
-ajout des poids correspondants et d'un adaptateur d'inférence testé.
+Les facteurs réellement proposés sont EDSR x2/x3/x4, SPAN x2/x3/x4 et
+UNet x2/x3/x4. Les facteurs sont déterminés par la présence des poids et ne
+sont jamais simulés par un redimensionnement ultérieur.
+
+Les poids locaux nécessaires sont :
+
+- EDSR : `edsrx2.pth`, `edsrx3.pth`, `edsrx4.pth`.
+- SPAN : `spanx2_ch52.pth`, `spanx3_ch52.pth`, `spanx4_ch52.pth`.
+- U-Net : `unet_x2_best.pt`, `unet_x3_best.pt`, `unet_x4_best.pt`.
+- Real-ESRGAN : `RealESRGAN_x2plus.pth` et `RealESRGAN_x4plus.pth`, conservés
+  mais non sélectionnables faute d'architecture RRDBNet complète.
 
 Les FPS affichés sont le débit de lots effectivement terminés; les
 millisecondes sont mesurées séparément pour chaque méthode. La barre

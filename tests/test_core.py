@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 import cv2
 import numpy as np
 
@@ -16,14 +17,16 @@ class CoreTests(unittest.TestCase):
             _check_image(np.zeros((4, 4), dtype=np.uint8))
 
     def test_only_models_with_corrections_weights_are_listed(self):
-        self.assertEqual(available_model_names(), ())
-        self.assertEqual(correction_checkpoints(), ())
+        if correction_checkpoints():
+            self.assertEqual(available_model_names(), ("EDSR", "SPAN", "U-Net"))
+        else:
+            self.assertEqual(available_model_names(), ())
 
     def test_corrections_inventory_is_explicit(self):
         inventory = model_inventory()
         self.assertEqual(set(inventory), {"EDSR", "SPAN", "Real-ESRGAN", "UNet"})
-        for metadata in inventory.values():
-            self.assertEqual(metadata["weights"], ())
+        self.assertEqual(len(inventory["Real-ESRGAN"]["weights"]),
+                         len(list(Path("Existing_Models/Real-ERSGAN/weights").glob("*.pth"))))
 
     def test_processing_sizes_are_exact_and_aspect_safe(self):
         image = np.zeros((900, 1600, 3), dtype=np.uint8)
