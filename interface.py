@@ -11,9 +11,10 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QKeySequence, QPainter, QShortcut
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
-                               QFileDialog, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-                               QSplitter, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
+                               QLabel, QFileDialog, QLineEdit, QMainWindow, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
+                               QVBoxLayout, QWidget, QLayout)
 
 from capture import CaptureError, FirefoxCapture, list_windows
 from game import GameView
@@ -156,7 +157,11 @@ class ImagePanel(QWidget):
         self.fps_value = 0
         self.device = device
         self.zoom = 1.0
-        self.setMinimumSize(180, 120)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.stats.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.stats.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.addWidget(self.title)
         layout.addWidget(self.stats)
@@ -283,6 +288,7 @@ class MainWindow(QMainWindow):
     def __init__(self, model_names: tuple[str, str], scale: int) -> None:
         super().__init__()
         self.closing = False
+        self.setMinimumSize(0, 0)
         self.model_names = model_names
         self.scale = scale
         self.setWindowTitle(f"Sup-Eirb — {model_names[0]} / {model_names[1]}")
@@ -332,28 +338,41 @@ class MainWindow(QMainWindow):
         self.capture_rate.addItems(CAPTURE_RATES)
         self.capture_rate.setCurrentText("60 FPS")
         self.capture_rate.currentTextChanged.connect(self.change_capture_rate)
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("Adresse du jeu :"))
-        controls.addWidget(self.url, 1)
-        controls.addWidget(open_button)
-        controls.addWidget(firefox_button)
-        controls.addWidget(self.pause_button)
-        controls.addWidget(self.image_button)
-        controls.addWidget(self.sequence_button)
-        controls.addWidget(self.models_button)
-        controls.addWidget(self.play_button)
-        controls.addWidget(self.previous_button)
-        controls.addWidget(self.next_button)
-        controls.addWidget(self.restart_button)
-        controls.addWidget(QLabel("Lecture :"))
-        controls.addWidget(self.playback_rate)
-        controls.addWidget(self.expand_button)
-        controls.addWidget(self.diff_button)
-        controls.addWidget(self.zoom_reset_button)
-        controls.addWidget(QLabel("Entrée :"))
-        controls.addWidget(self.resolution)
-        controls.addWidget(QLabel("Capture :"))
-        controls.addWidget(self.capture_rate)
+        controls_layout = QHBoxLayout()
+        controls_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.addWidget(QLabel("Adresse du jeu :"))
+        controls_layout.addWidget(self.url, 1)
+        controls_layout.addWidget(open_button)
+        controls_layout.addWidget(firefox_button)
+        controls_layout.addWidget(self.pause_button)
+        controls_layout.addWidget(self.image_button)
+        controls_layout.addWidget(self.sequence_button)
+        controls_layout.addWidget(self.models_button)
+        controls_layout.addWidget(self.play_button)
+        controls_layout.addWidget(self.previous_button)
+        controls_layout.addWidget(self.next_button)
+        controls_layout.addWidget(self.restart_button)
+        controls_layout.addWidget(QLabel("Lecture :"))
+        controls_layout.addWidget(self.playback_rate)
+        controls_layout.addWidget(self.expand_button)
+        controls_layout.addWidget(self.diff_button)
+        controls_layout.addWidget(self.zoom_reset_button)
+        controls_layout.addWidget(QLabel("Entrée :"))
+        controls_layout.addWidget(self.resolution)
+        controls_layout.addWidget(QLabel("Capture :"))
+        controls_layout.addWidget(self.capture_rate)
+        controls_widget = QWidget()
+        controls_widget.setLayout(controls_layout)
+        controls_widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidget(controls_widget)
+        controls_scroll.setWidgetResizable(False)
+        controls_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        controls_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        controls_scroll.setMaximumHeight(controls_widget.sizeHint().height() + 4)
 
         self.left = ImagePanel(f"{model_names[0]} ×{scale}")
         self.right = ImagePanel(f"{model_names[1]} ×{scale}")
@@ -363,6 +382,7 @@ class MainWindow(QMainWindow):
         self.source_stack.addWidget(self.original_panel)
         bottom = QWidget()
         results = QHBoxLayout(bottom)
+        results.setContentsMargins(0, 0, 0, 0)
         results.addWidget(self.left)
         results.addWidget(self.right)
         splitter = QSplitter(Qt.Orientation.Vertical)
@@ -372,7 +392,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         root = QWidget()
         layout = QVBoxLayout(root)
-        layout.addLayout(controls)
+        layout.addWidget(controls_scroll)
         layout.addWidget(splitter, 1)
         self.metrics = QLabel("Capture : -- FPS | Modèle 1 : -- FPS | Modèle 2 : -- FPS")
         layout.addWidget(self.metrics)
