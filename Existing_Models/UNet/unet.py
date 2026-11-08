@@ -6,8 +6,8 @@ Arborescence attendue dans --root :
     LR_X4/0801x4.png ...
 
 Exemples :
-    python unet_sr_div2k.py --root data/DIV2K --scale 4
-    python unet_sr_div2k.py --root data/DIV2K --scale 4 --bench   # temps par image seulement
+    python unet.py --root data/DIV2K --scale 4
+    python unet.py --root data/DIV2K --scale 4 --bench   # temps par image seulement
 """
 import argparse
 import glob
