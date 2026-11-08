@@ -206,13 +206,16 @@ class SRModel(BaseModel):
             img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
             self.feed_data(val_data)
 
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            start_time = time.perf_counter()
+            n_reps = self.opt['val'].get('time_reps', 10)
             self.test()
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            inference_times.append(time.perf_counter() - start_time)
+            start_time = time.perf_counter()
+            for _ in range(n_reps):
+                self.test()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            inference_times.append((time.perf_counter() - start_time) / n_reps)
 
             visuals = self.get_current_visuals()
             sr_img = tensor2img([visuals['result']])

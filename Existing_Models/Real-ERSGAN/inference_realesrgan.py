@@ -156,16 +156,21 @@ def main():
             img_mode = None
 
         try:
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            start_time = time.perf_counter()
             if args.face_enhance:
                 _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
             else:
                 output, _ = upsampler.enhance(img, outscale=args.outscale)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            inference_times.append(time.perf_counter() - start_time)
+                if args.tile == 0:
+                    n_reps = 10
+                    with torch.no_grad():
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        start_time = time.perf_counter()
+                        for _ in range(n_reps):
+                            upsampler.model(upsampler.img)
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                    inference_times.append((time.perf_counter() - start_time) / n_reps)
         except RuntimeError as error:
             print('Error', error)
             print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')

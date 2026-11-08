@@ -61,6 +61,7 @@ def sync(device):
 
 
 def timed(fn, x, device, reps):
+    fn(x)
     sync(device)
     t0 = time.perf_counter()
     for _ in range(reps):
@@ -96,6 +97,7 @@ def main():
             data_root = test_root
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.backends.cudnn.benchmark = True
     s = args.scale
     output_dir = args.out or os.path.join("results", f"x{s}")
     os.makedirs(output_dir, exist_ok=True)
