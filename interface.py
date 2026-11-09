@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
-from dataclasses import dataclass
 import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                QLabel, QFileDialog, QLineEdit, QMainWindow, QMessageBox,
@@ -21,6 +20,7 @@ from game import GameView
 from sequence import SequenceReader
 from super_resolution import (ModelError, available_model_names, create_processor,
                                supported_scales)
+from pipeline import Frame, Request, LatestRequest, process_pair, resize_for_model
 
 
 RESOLUTIONS = {"320 × 180": (320, 180), "480 × 270": (480, 270), "640 × 360": (640, 360)}
@@ -68,30 +68,13 @@ def difference_image(first: np.ndarray, second: np.ndarray) -> np.ndarray:
 def prepare_fixed_image(image: np.ndarray, scale: int = 2) -> tuple[np.ndarray, np.ndarray]:
     """Réduit une photo selon le facteur choisi et conserve sa référence."""
     height, width = image.shape[:2]
-    reduced = cv2.resize(image, (max(1, width // scale), max(1, height // scale)),
+    height, width = height - height % scale, width - width % scale
+    if height == 0 or width == 0:
+        raise ValueError("Image trop petite pour ce facteur.")
+    image = image[:height, :width]
+    reduced = cv2.resize(image, (width // scale, height // scale),
                          interpolation=cv2.INTER_AREA)
     return reduced, image
-
-
-@dataclass(frozen=True)
-class Frame:
-    """Image capturée une seule fois, avec son identifiant et son instant."""
-
-    image: np.ndarray
-    sequence: int
-    captured_at: float
-
-
-def resize_for_model(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    """Redimensionne sans déformation par ajustement puis recadrage central."""
-    target_width, target_height = size
-    height, width = image.shape[:2]
-    scale = max(target_width / width, target_height / height)
-    resized = cv2.resize(image, (round(width * scale), round(height * scale)),
-                         interpolation=cv2.INTER_AREA)
-    top = (resized.shape[0] - target_height) // 2
-    left = (resized.shape[1] - target_width) // 2
-    return np.ascontiguousarray(resized[top:top + target_height, left:left + target_width])
 
 
 class RegionPicker(QDialog):
@@ -155,6 +138,8 @@ class ImagePanel(QWidget):
         self.pixels: np.ndarray | None = None
         self.finished: deque[float] = deque()
         self.fps_value = 0
+        self.paint_ms = 0.0
+        self._pending_display = False
         self.device = device
         self.zoom = 1.0
         self.setMinimumSize(0, 0)
@@ -165,28 +150,38 @@ class ImagePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.title)
         layout.addWidget(self.stats)
+        layout.addStretch(1)
 
     def set_result(self, image: np.ndarray, milliseconds: float, now: float,
-                   input_size: tuple[int, int]) -> None:
+                   input_size: tuple[int, int], network_ms: float | None = None,
+                   sequence: int | None = None) -> None:
         self.pixels = np.ascontiguousarray(image)
         height, width = self.pixels.shape[:2]
         self.image = QImage(self.pixels.data, width, height, self.pixels.strides[0],
                             QImage.Format.Format_BGR888)
-        self.finished.append(now)
-        while self.finished and now - self.finished[0] > 1:
-            self.finished.popleft()
-        fps = len(self.finished)
-        self.fps_value = fps
+        fps = self.display_fps(now)
+        self._pending_display = True
         output = f"{width} × {height}"
         suffix = f" — {self.device}" if self.device else ""
-        self.stats.setText(f"{self.title.text()} — {fps} FPS affichés — "
-                           f"{milliseconds:.1f} ms — {input_size[0]}×{input_size[1]} → {output}{suffix}")
+        network = milliseconds if network_ms is None else network_ms
+        rate = 1000 / network if network > 0 else 0
+        frame = f" — frame {sequence}" if sequence is not None else ""
+        self.stats.setText(f"{fps:.2f} FPS affichés — réseau {network:.1f} ms ({rate:.1f} FPS théoriques) — "
+                           f"traitement {milliseconds:.1f} ms — {input_size[0]}×{input_size[1]} → {output}{suffix}{frame}")
         self.update()
+
+    def display_fps(self, now):
+        while self.finished and now - self.finished[0] > 10:
+            self.finished.popleft()
+        self.fps_value = ((len(self.finished) - 1) / max(now - self.finished[0], 1e-6)
+                          if len(self.finished) > 1 else 0.0)
+        return self.fps_value
 
     def set_title(self, title: str) -> None:
         self.title.setText(title)
 
     def set_static(self, image: np.ndarray, title: str) -> None:
+        self._pending_display = False
         self.pixels = np.ascontiguousarray(image)
         height, width = self.pixels.shape[:2]
         self.image = QImage(self.pixels.data, width, height, self.pixels.strides[0],
@@ -204,14 +199,21 @@ class ImagePanel(QWidget):
         event.accept()
 
     def paintEvent(self, event) -> None:
+        started = time.perf_counter()
         painter = QPainter(self)
         painter.fillRect(self.rect(), Qt.GlobalColor.black)
         if not self.image.isNull():
-            scale = min(self.width() / self.image.width(), self.height() / self.image.height())
-            width, height = self.image.width() * scale * self.zoom, self.image.height() * scale * self.zoom
-            scaled = self.image.scaled(int(width), int(height), Qt.AspectRatioMode.KeepAspectRatio,
-                                       Qt.TransformationMode.FastTransformation)
-            painter.drawImage((self.width() - width) / 2, (self.height() - height) / 2, scaled)
+            area = QRectF(self.rect()).adjusted(0, self.stats.geometry().bottom() + 6, 0, 0)
+            if area.height() > 0:
+                scale = min(area.width() / self.image.width(), area.height() / self.image.height()) * self.zoom
+                width, height = self.image.width() * scale, self.image.height() * scale
+                target = QRectF(area.center().x() - width / 2, area.center().y() - height / 2, width, height)
+                painter.setClipRect(area)
+                painter.drawImage(target, self.image)
+                if self._pending_display:
+                    self.finished.append(time.perf_counter())
+                    self._pending_display = False
+        self.paint_ms = (time.perf_counter() - started) * 1000
 
 
 class ModelSelectionDialog(QDialog):
@@ -281,9 +283,8 @@ class ModelSelectionDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    bicubic_ready = Signal(object)
-    espcn_ready = Signal(object)
-    fixed_ready = Signal(object)
+    work_ready = Signal(object)
+    source_ready = Signal(object)
 
     def __init__(self, model_names: tuple[str, str], scale: int) -> None:
         super().__init__()
@@ -296,6 +297,7 @@ class MainWindow(QMainWindow):
         self.game = GameView()
         self.external: FirefoxCapture | None = None
         self.source = self.game
+        self.source_active = False
         self.status = QLabel("Choisissez une adresse de jeu ou capturez Firefox.")
         self.welcome = QLabel("Ouvrez un jeu, une vidéo ou une image pour commencer.")
         self.url = QLineEdit()
@@ -395,16 +397,21 @@ class MainWindow(QMainWindow):
         self.game.status_changed.connect(self.status.setText)
         self.game.fullscreen_requested.connect(self.set_fullscreen)
 
-        self.bicubic_ready.connect(self._show_bicubic)
-        self.espcn_ready.connect(self._show_espcn)
-        self.fixed_ready.connect(self._show_fixed)
-        self.bicubic_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-1")
-        self.espcn_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-2")
-        self.fixed_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fixed-image")
-        self.bicubic_future: Future | None = None
-        self.espcn_future: Future | None = None
-        self.fixed_future: Future | None = None
+        self.work_ready.connect(self._work_done)
+        self.source_ready.connect(self._source_done)
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
+        self.capture_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="capture")
+        self.future: Future | None = None
+        self.capture_future: Future | None = None
+        self.requests = LatestRequest()
+        self.generation = 0
         self.processors = None
+        self.model_change = (model_names, scale)
+        self.models_button.setEnabled(False)
+        self.last_displayed_sequence = None
+        self.displayed_frames = (None, None)
+        self._sequence_loaded_index = None
+        self.last_comparison = None
         self.latest_frame: Frame | None = None
         self.sync_frame: Frame | None = None
         self.sequence = 0
@@ -414,8 +421,8 @@ class MainWindow(QMainWindow):
         self.expanded = False
         self.showing_difference = False
         self.fixed_original: np.ndarray | None = None
-        self.fixed_bicubic: np.ndarray | None = None
-        self.fixed_espcn: np.ndarray | None = None
+        self.fixed_first: np.ndarray | None = None
+        self.fixed_second: np.ndarray | None = None
         self.fixed_size: tuple[int, int] | None = None
         self.sequence_reader: SequenceReader | None = None
         self.sequence_index = 0
@@ -426,14 +433,13 @@ class MainWindow(QMainWindow):
         self.right.zoom_changed.connect(self.change_zoom)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._capture_tick)
-        try:
-            self.processors = (create_processor(model_names[0], scale),
-                               create_processor(model_names[1], scale))
-            devices = " / ".join(processor.device for processor in self.processors)
-            self.status.setText(f"Modèles prêts ({devices}). Ouvrez une source pour commencer.")
-            self.timer.start(self._capture_interval())
-        except ModelError as exc:
-            self.status.setText(f"Erreur CUDA : {exc}")
+        self.resolution.currentTextChanged.connect(self.change_resolution)
+        for index, description in enumerate(("Performance", "Équilibré", "Qualité")):
+            self.resolution.setItemData(index, description, Qt.ItemDataRole.ToolTipRole)
+        self.fps_timer = QTimer(self)
+        self.fps_timer.timeout.connect(self._update_metrics)
+        self.fps_timer.start(250)
+        self._dispatch()
         QShortcut(QKeySequence("F11"), self, activated=self.toggle_fullscreen)
         QTimer.singleShot(0, lambda: splitter.setSizes([max(1, self.height() // 3),
                                                          max(1, self.height() * 2 // 3)]))
@@ -462,9 +468,116 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         first, second, scale = dialog.selection()
-        self._replacement = MainWindow((first, second), scale)
-        self._replacement.show()
-        self.close()
+        self._invalidate()
+        self.model_names, self.scale = (first, second), scale
+        self.model_change = (self.model_names, scale)
+        self.models_button.setEnabled(False)
+        self.left.set_title(f"{first} ×{scale}")
+        self.right.set_title(f"{second} ×{scale}")
+        self.setWindowTitle(f"Sup-Eirb — {first} / {second}")
+        self._dispatch()
+
+    def _invalidate(self):
+        self.generation += 1
+        self.requests.clear()
+        self.last_comparison = None
+        self.last_displayed_sequence = None
+        self.fixed_first = self.fixed_second = None
+        self.showing_difference = False
+        self.diff_button.setText("Différences")
+        for panel in (self.left, self.right):
+            panel.image = QImage()
+            panel.pixels = None
+            panel.finished.clear()
+            panel.fps_value = 0.0
+            panel.update()
+        self.displayed_frames = (None, None)
+
+    def change_resolution(self):
+        self._invalidate()
+        if self.latest_frame is not None:
+            self._schedule_workers(self.latest_frame)
+
+    def _load_models(self, selection):
+        self._release_models()
+        names, scale = selection
+        loaded = []
+        try:
+            for name in names:
+                loaded.append(create_processor(name, scale))
+        except Exception:
+            for processor in loaded:
+                processor.close()
+            raise
+        self.processors = tuple(loaded)
+        return "loaded", selection
+
+    def _release_models(self):
+        previous, self.processors = self.processors, None
+        for processor in previous or ():
+            processor.close()
+
+    def _dispatch(self):
+        if self.closing or self.future is not None:
+            return
+        if self.model_change is not None:
+            selection, self.model_change = self.model_change, None
+            self.status.setText("Chargement des modèles…")
+            self.future = self.executor.submit(self._load_models, selection)
+        elif self.processors is not None:
+            request = self.requests.take()
+            if request is None:
+                return
+            self.future = self.executor.submit(self._process_request, request)
+        else:
+            return
+        self.future.add_done_callback(self.work_ready.emit)
+
+    def _process_request(self, request):
+        result = process_pair(self.processors, request)
+        if request.fixed:
+            result.metrics = tuple(image_metrics(result.reference, image) for image in result.images)
+            result.difference = pixel_difference_metrics(*result.images)
+        return "comparison", result
+
+    def _work_done(self, future):
+        if future is not self.future:
+            return
+        self.future = None
+        if self.closing:
+            return
+        try:
+            kind, result = future.result()
+        except CancelledError:
+            return
+        except Exception as exc:
+            self.status.setText(f"Traitement interrompu : {exc}")
+            self.timer.stop()
+            self.requests.clear()
+            self.models_button.setEnabled(True)
+            if self.model_change is not None:
+                self._dispatch()
+            return
+        if kind == "loaded":
+            self.models_button.setEnabled(True)
+            for panel, processor in zip((self.left, self.right), self.processors):
+                panel.device = f"{processor.device} / {'FP16' if processor.use_half else 'FP32'}"
+            devices = " / ".join(panel.device for panel in (self.left, self.right))
+            notice = " CUDA indisponible : exécution CPU lente." if any(
+                processor.device == "cpu" for processor in self.processors) else ""
+            self.status.setText(f"Modèles prêts : {devices}.{notice}")
+            if not self.sync_mode:
+                self.timer.start(self._capture_interval())
+            if self.latest_frame is not None:
+                self._schedule_workers(self.latest_frame)
+        else:
+            request = result.request
+            current = request.generation == self.generation
+            if self.sync_mode and not self.sequence_playing and self.latest_frame is not None:
+                current = current and request.frame.sequence == self.latest_frame.sequence
+            if current:
+                self._show_comparison(result)
+        self._dispatch()
 
     def open_sequence(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Ouvrir une séquence d'images")
@@ -476,6 +589,8 @@ class MainWindow(QMainWindow):
             self.status.setText(str(exc))
             return
         self._stop_external()
+        self._invalidate()
+        self.latest_frame = None
         self.sequence_reader = reader
         self.sequence_index = 0
         self.sequence_mode = True
@@ -490,13 +605,12 @@ class MainWindow(QMainWindow):
     def _show_sequence_frame(self) -> None:
         if self.sequence_reader is None:
             return
-        image = self.sequence_reader.read(self.sequence_index)
-        self.original_panel.set_static(
-            image, f"Frame {self.sequence_index + 1}/{len(self.sequence_reader.paths)}")
-        self.sequence += 1
-        self.latest_frame = Frame(image, self.sequence, time.perf_counter())
-        self._schedule_workers(self.latest_frame)
-        self.status.setText(f"Frame {self.sequence_index + 1}/{len(self.sequence_reader.paths)}")
+        if self.capture_future is not None:
+            return
+        index = self.sequence_index
+        if self._sequence_loaded_index == (self.generation, index):
+            return
+        self._submit_source(self.sequence_reader.read, (index,), "sequence", index)
 
     def toggle_sequence_playback(self) -> None:
         if not self.sequence_mode:
@@ -534,7 +648,12 @@ class MainWindow(QMainWindow):
             self.status.setText("Saisissez une adresse http:// ou https://.")
             return
         self._stop_external()
+        self._invalidate()
+        self.latest_frame = None
+        self.sync_mode = False
         self.source = self.game
+        self.source_active = True
+        self.timer.start(self._capture_interval())
         self.fixed_mode = False
         self.sequence_mode = False
         self.source_stack.setCurrentWidget(self.game)
@@ -571,7 +690,12 @@ class MainWindow(QMainWindow):
                 if region is None:
                     return
             self.external = FirefoxCapture(window, region)
+            self._invalidate()
+            self.latest_frame = None
+            self.sync_mode = False
             self.source = self.external
+            self.source_active = True
+            self.timer.start(self._capture_interval())
             self.fixed_mode = False
             self.sequence_mode = False
             self.source_stack.setCurrentWidget(self.game)
@@ -589,55 +713,41 @@ class MainWindow(QMainWindow):
         if image is None:
             self.status.setText("Image impossible à ouvrir.")
             return
-        reduced, original = prepare_fixed_image(image, self.scale)
         self._stop_external()
+        self._invalidate()
         self.fixed_mode = True
+        self.sequence_mode = False
+        self.sequence_playing = False
         self.sync_mode = True
         self.timer.stop()
         self.source_stack.setCurrentWidget(self.original_panel)
-        self.original_panel.set_static(original, "Image originale — référence")
-        self.fixed_original = original
-        self.fixed_size = (reduced.shape[1], reduced.shape[0])
+        self.original_panel.set_static(image, "Image originale")
+        self.fixed_original = image
+        self.sequence += 1
+        self.latest_frame = Frame(image, self.sequence, time.perf_counter())
         self.welcome.hide()
-        self.status.setText(f"Image fixe chargée. Calcul de {self.model_names[0]} et "
-                            f"{self.model_names[1]}...")
-        self.fixed_future = self.fixed_executor.submit(self._process_fixed, reduced, original)
-        self.fixed_future.add_done_callback(self.fixed_ready.emit)
+        self.status.setText("Calcul de l'image fixe…")
+        self._schedule_workers(self.latest_frame)
 
-    def _process_fixed(self, reduced: np.ndarray, original: np.ndarray):
-        first, second = self.processors
-        first_image, first_ms = first.upscale(reduced)
-        second_image, second_ms = second.upscale(reduced)
-        target = (original.shape[1], original.shape[0])
-        first_image = cv2.resize(first_image, target, interpolation=cv2.INTER_AREA)
-        second_image = cv2.resize(second_image, target, interpolation=cv2.INTER_AREA)
-        return (first_image, second_image, first_ms, second_ms,
-                image_metrics(original, first_image), image_metrics(original, second_image))
-
-    def _show_fixed(self, future: Future) -> None:
-        self.fixed_future = None
-        if self.closing:
-            return
-        try:
-            bicubic, espcn, bicubic_ms, espcn_ms, bicubic_metrics, espcn_metrics = future.result()
-        except (CancelledError, ModelError) as exc:
-            if not isinstance(exc, CancelledError):
-                self.status.setText(f"Erreur image fixe : {exc}")
-            return
-        self.fixed_bicubic, self.fixed_espcn = bicubic, espcn
-        self.left.set_static(bicubic, f"{self.model_names[0]} ×{self.scale}")
-        self.right.set_static(espcn, f"{self.model_names[1]} ×{self.scale}")
-        mae, maximum, different = pixel_difference_metrics(bicubic, espcn)
-        self.left.stats.setText(f"PSNR : {bicubic_metrics[0]:.2f} dB | SSIM : {bicubic_metrics[1]:.4f} | "
-                            f"{bicubic_ms:.1f} ms")
-        self.right.stats.setText(f"PSNR : {espcn_metrics[0]:.2f} dB | SSIM : {espcn_metrics[1]:.4f} | "
-                            f"{espcn_ms:.1f} ms")
-        self.status.setText("Image fixe prête. Utilisez la molette sur un panneau pour zoomer.")
-        self.metrics.setText(f"Référence : {self.fixed_original.shape[1]}×{self.fixed_original.shape[0]} | "
-                             f"Réduction : {self.fixed_size[0]}×{self.fixed_size[1]} | "
-                             f"Différence {self.model_names[1]}/{self.model_names[0]} : "
-                             f"MAE {mae:.2f} | max {maximum} | "
-                             f"{different:.2f}% pixels différents")
+    def _show_comparison(self, result):
+        request = result.request
+        self.last_comparison = result
+        self.last_displayed_sequence = request.frame.sequence
+        self.displayed_frames = (request.frame.sequence, request.frame.sequence)
+        now = time.perf_counter()
+        for panel, image, elapsed, network in zip((self.left, self.right), result.images,
+                                                   result.milliseconds, result.network_ms):
+            panel.set_result(image, elapsed, now, request.size, network, request.frame.sequence)
+        if request.fixed:
+            self.fixed_first, self.fixed_second = result.images
+            self.fixed_size = request.size
+            for panel, quality in zip((self.left, self.right), result.metrics):
+                panel.stats.setText(panel.stats.text() +
+                                    f" | PSNR {quality[0]:.2f} dB | SSIM {quality[1]:.4f}")
+            mae, maximum, different = result.difference
+            self.status.setText(f"Référence recadrée : {result.reference.shape[1]}×{result.reference.shape[0]} | "
+                                f"Écart entre modèles : MAE {mae:.2f}, max {maximum}, {different:.2f}% différents.")
+        self._update_metrics()
 
     def change_zoom(self, multiplier: float) -> None:
         self.zoom = max(1.0, min(8.0, self.zoom * multiplier))
@@ -658,25 +768,27 @@ class MainWindow(QMainWindow):
         self.expand_button.setText("Affichage normal" if self.expanded else "Comparaison agrandie")
 
     def toggle_difference(self) -> None:
-        if self.fixed_bicubic is None or self.fixed_espcn is None:
+        if self.fixed_first is None or self.fixed_second is None:
             self.status.setText("Chargez d'abord une image fixe.")
             return
         self.showing_difference = not self.showing_difference
         if self.showing_difference:
-            self.right.set_static(difference_image(self.fixed_bicubic, self.fixed_espcn),
+            self.right.set_static(difference_image(self.fixed_first, self.fixed_second),
                                   f"Différences amplifiées | {self.model_names[1]} - "
                                   f"{self.model_names[0]}")
             self.diff_button.setText(f"Afficher {self.model_names[1]}")
         else:
-            self.right.set_static(self.fixed_espcn, f"{self.model_names[1]} ×{self.scale}")
+            self.right.set_static(self.fixed_second, f"{self.model_names[1]} ×{self.scale}")
             self.diff_button.setText("Afficher les différences")
 
     def _stop_external(self) -> None:
         if self.external:
-            self.external.close()
+            self.capture_executor.submit(self.external.close)
             self.external = None
 
     def _capture_tick(self) -> None:
+        if self.closing:
+            return
         if self.sequence_mode:
             if self.sequence_reader is not None and self.sequence_index + 1 < len(self.sequence_reader.paths):
                 self.sequence_index += 1
@@ -686,99 +798,92 @@ class MainWindow(QMainWindow):
                 self.play_button.setText("Lecture")
                 self.timer.stop()
             return
-        if self.processors is None or self.sync_mode:
+        if self.sync_mode or self.fixed_mode or not self.source_active:
             return
         self._capture_and_schedule()
 
+    def _submit_source(self, function, args, kind, index=None):
+        if self.closing or self.capture_future is not None:
+            return
+        generation = self.generation
+
+        def read():
+            return generation, kind, index, function(*args)
+
+        self.capture_future = self.capture_executor.submit(read)
+        self.capture_future.add_done_callback(self.source_ready.emit)
+
+    def _source_done(self, future):
+        if future is not self.capture_future:
+            return
+        self.capture_future = None
+        if self.closing:
+            return
+        try:
+            generation, kind, index, image = future.result()
+        except CancelledError:
+            return
+        except Exception as exc:
+            self.status.setText(f"Capture interrompue : {exc}")
+            return
+        if generation == self.generation and image is not None:
+            if kind == "sequence":
+                if index == self.sequence_index:
+                    self._sequence_loaded_index = (generation, index)
+                    self.original_panel.set_static(image, f"Frame {index + 1}/{len(self.sequence_reader.paths)}")
+                    self._accept_capture(image)
+            elif not self.sync_mode:
+                self._accept_capture(image)
+        if self.sequence_mode and (generation != self.generation or index != self.sequence_index):
+            self._show_sequence_frame()
+
     def _capture_and_schedule(self) -> None:
+        if self.external is not None:
+            self._submit_source(self.external.capture, (), "firefox")
+            return
+        # Qt impose la capture du widget dans son thread principal.
         try:
             image = self.source.capture()
         except (CaptureError, OSError) as exc:
             self.status.setText(f"Capture interrompue : {exc}")
             return
-        if image is None:
-            return
+        if image is not None:
+            self._accept_capture(image)
+
+    def _accept_capture(self, image):
         now = time.perf_counter()
         self.sequence += 1
-        frame = Frame(image, self.sequence, now)
-        self.latest_frame = frame
+        self.latest_frame = Frame(image, self.sequence, now)
         self.capture_times.append(now)
-        while self.capture_times and now - self.capture_times[0] > 1:
-            self.capture_times.popleft()
-        self._update_metrics()
-        self._schedule_workers(frame)
+        self._schedule_workers(self.latest_frame)
 
     def _schedule_workers(self, frame: Frame) -> None:
-        size = RESOLUTIONS[self.resolution.currentText()]
-        low = resize_for_model(frame.image, size)
-        if self.bicubic_future is None:
-            self.bicubic_future = self.bicubic_executor.submit(self._process_bicubic, frame, low, size)
-            self.bicubic_future.add_done_callback(self.bicubic_ready.emit)
-        if self.espcn_future is None:
-            self.espcn_future = self.espcn_executor.submit(self._process_espcn, frame, low, size)
-            self.espcn_future.add_done_callback(self.espcn_ready.emit)
-
-    def _process_bicubic(self, frame: Frame, low: np.ndarray, size: tuple[int, int]):
-        result, milliseconds = self.processors[0].upscale(low)
-        return frame, result, milliseconds, size
-
-    def _process_espcn(self, frame: Frame, low: np.ndarray, size: tuple[int, int]):
-        result, milliseconds = self.processors[1].upscale(low)
-        return frame, result, milliseconds, size
-
-    def _show_bicubic(self, future: Future) -> None:
-        self.bicubic_future = None
         if self.closing:
             return
-        try:
-            frame, image, milliseconds, size = future.result()
-        except CancelledError:
-            return
-        except ModelError as exc:
-            self.status.setText(f"Erreur {self.model_names[0]} : {exc}")
-            return
-        now = time.perf_counter()
-        self.left.set_result(image, milliseconds, now, size)
-        self._update_metrics()
-        self._schedule_next(self.bicubic_executor, "bicubic", frame)
-
-    def _show_espcn(self, future: Future) -> None:
-        self.espcn_future = None
-        if self.closing:
-            return
-        try:
-            frame, image, milliseconds, size = future.result()
-        except CancelledError:
-            return
-        except ModelError as exc:
-            self.status.setText(f"Erreur {self.model_names[1]} : {exc}")
-            return
-        now = time.perf_counter()
-        self.right.set_result(image, milliseconds, now, size)
-        self._update_metrics()
-        self._schedule_next(self.espcn_executor, "espcn", frame)
+        self.requests.offer(Request(frame, RESOLUTIONS[self.resolution.currentText()],
+                                    self.generation, self.fixed_mode))
+        self._dispatch()
 
     def _update_metrics(self) -> None:
-        capture_fps = len(self.capture_times)
-        self.metrics.setText(f"Capture réelle : {capture_fps} FPS | "
-                            f"{self.model_names[0]} affiché : {self.left.fps_value} FPS | "
-                            f"{self.model_names[1]} affiché : {self.right.fps_value} FPS | "
-                            f"Mode : {'synchronisé' if self.sync_mode else 'temps réel'}")
-
-    def _schedule_next(self, executor: ThreadPoolExecutor, name: str, processed: Frame) -> None:
-        frame = self.sync_frame if self.sync_mode else self.latest_frame
-        if frame is None or frame.sequence == processed.sequence:
-            return
-        size = RESOLUTIONS[self.resolution.currentText()]
-        low = resize_for_model(frame.image, size)
-        if name == "bicubic":
-            self.bicubic_future = executor.submit(self._process_bicubic, frame, low, size)
-            self.bicubic_future.add_done_callback(self.bicubic_ready.emit)
-        else:
-            self.espcn_future = executor.submit(self._process_espcn, frame, low, size)
-            self.espcn_future.add_done_callback(self.espcn_ready.emit)
+        now = time.perf_counter()
+        while self.capture_times and now - self.capture_times[0] > 2:
+            self.capture_times.popleft()
+        capture_fps = ((len(self.capture_times) - 1) / max(now - self.capture_times[0], 1e-6)
+                       if len(self.capture_times) > 1 else 0.0)
+        first, second = self.left.display_fps(now), self.right.display_fps(now)
+        lot = f" | Paire : {self.last_comparison.total_ms:.1f} ms" if self.last_comparison else ""
+        self.metrics.setText(f"Capture réelle : {capture_fps:.1f} FPS | "
+                             f"Affichage : {first:.2f} / {second:.2f} FPS | "
+                             f"Frame : {self.last_displayed_sequence} | "
+                             f"Mode : {'synchronisé' if self.sync_mode else 'temps réel'}{lot}")
 
     def toggle_sync(self) -> None:
+        if self.fixed_mode:
+            self.status.setText("Image fixe : ouvrez un jeu ou une séquence pour reprendre la capture.")
+            return
+        if self.sequence_mode:
+            self.toggle_sequence_playback()
+            return
         if self.sync_mode:
             self.sync_mode = False
             self.sync_frame = None
@@ -786,12 +891,14 @@ class MainWindow(QMainWindow):
             self.status.setText("Mode temps réel actif.")
             self.timer.start(self._capture_interval())
             return
-        self._capture_and_schedule()
+        if self.latest_frame is None:
+            self._capture_and_schedule()
         if self.latest_frame is None:
             return
         self.sync_mode = True
         self.sync_frame = self.latest_frame
         self.timer.stop()
+        self._schedule_workers(self.sync_frame)
         self.pause_button.setText("Reprendre le temps réel")
         self.status.setText(f"Comparaison synchronisée sur l'image {self.sync_frame.sequence}.")
 
@@ -802,18 +909,34 @@ class MainWindow(QMainWindow):
         self.set_fullscreen(not self.isFullScreen())
 
     def closeEvent(self, event) -> None:
+        if getattr(self, "_shutdown_complete", False):
+            event.accept()
+            return
+        event.ignore()
+        if self.closing:
+            return
         self.closing = True
-        self.status.setText("Fermeture de Sup-Eirb...")
+        self.status.setText("Libération des modèles…")
         self.timer.stop()
-        for future in (self.bicubic_future, self.espcn_future, self.fixed_future):
-            if future:
-                future.cancel()
-        self.bicubic_executor.shutdown(wait=True, cancel_futures=True)
-        self.espcn_executor.shutdown(wait=True, cancel_futures=True)
-        self.fixed_executor.shutdown(wait=True, cancel_futures=True)
+        self.fps_timer.stop()
+        self.requests.clear()
         self._stop_external()
+        # La libération suit l'inférence en cours ; Qt reste réactif.
+        self._release_future = self.executor.submit(self._release_models)
+        self._capture_stopped = self.capture_executor.submit(lambda: None)
+        self.executor.shutdown(wait=False, cancel_futures=False)
+        self.capture_executor.shutdown(wait=False, cancel_futures=False)
+        self._close_timer = QTimer(self)
+        self._close_timer.timeout.connect(self._finish_close)
+        self._close_timer.start(25)
+
+    def _finish_close(self):
+        if not self._release_future.done() or not self._capture_stopped.done():
+            return
+        self._close_timer.stop()
         self.game.close()
-        event.accept()
+        self._shutdown_complete = True
+        self.close()
 
 
 def run() -> int:

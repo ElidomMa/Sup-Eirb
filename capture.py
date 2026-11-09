@@ -63,11 +63,16 @@ class FirefoxCapture:
         if width < 2 or height < 2:
             raise CaptureError("La région de capture est trop petite.")
         self.area = {"left": left, "top": top, "width": width, "height": height}
-        self.screen = mss.mss()
+        self.screen = None
 
     def capture(self) -> np.ndarray:
+        # MSS doit être créé et utilisé dans le même worker.
+        if self.screen is None:
+            self.screen = mss.mss()
         frame = np.asarray(self.screen.grab(self.area), dtype=np.uint8)
         return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
     def close(self) -> None:
-        self.screen.close()
+        if self.screen is not None:
+            self.screen.close()
+            self.screen = None

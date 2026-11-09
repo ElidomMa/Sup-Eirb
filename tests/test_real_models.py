@@ -18,6 +18,25 @@ class RealModelTests(unittest.TestCase):
                     result, elapsed = processor.upscale(image)
                     self.assertEqual(result.shape, (8 * scale, 8 * scale, 3))
                     self.assertGreaterEqual(elapsed, 0)
+                    self.assertEqual(processor.verify_device(), processor.device)
+                    self.assertEqual(processor.last_input_device, processor.device)
+                    self.assertEqual(processor.last_output_device, processor.device)
+                    self.assertFalse(processor.model.training)
+                    self.assertTrue(all(not p.requires_grad for p in processor.model.parameters()))
+                    processor.close()
+
+    def test_span_fusion_is_cached_without_changing_the_output(self):
+        image = np.random.default_rng(7).integers(0, 256, (24, 32, 3), dtype=np.uint8)
+        original = create_processor("SPAN", 2, device="cpu", precision="fp32", optimize=False)
+        cached = create_processor("SPAN", 2, device="cpu", precision="fp32")
+        expected, _ = original.upscale(image)
+        result, _ = cached.upscale(image)
+        np.testing.assert_array_equal(result, expected)
+        self.assertEqual(cached.fused_blocks, 20)
+        # Deuxième image : aucune nouvelle fusion, même résultat.
+        np.testing.assert_array_equal(cached.upscale(image)[0], expected)
+        original.close()
+        cached.close()
 
     def test_two_models_have_compatible_scales(self):
         names = available_model_names()

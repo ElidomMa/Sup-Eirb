@@ -57,13 +57,15 @@ def supported_scales(name: str) -> tuple[int, ...]:
                  and _weight_path(name, scale).stat().st_size > 0)
 
 
-def create_processor(name: str, scale: int) -> Processor:
+def create_processor(name: str, scale: int, *, device: str = "auto",
+                     precision: str = "auto", optimize: bool = True) -> Processor:
     if scale not in supported_scales(name):
         raise ModelError(f"{name} ne possède pas de poids valides pour x{scale}.")
     from model_adapters import EDSRProcessor, SPANProcessor, UNetProcessor
     processors = {"EDSR": EDSRProcessor, "SPAN": SPANProcessor, "U-Net": UNetProcessor}
     try:
-        return processors[name](scale, _weight_path(name, scale))
+        return processors[name](scale, _weight_path(name, scale), device=device,
+                                precision=precision, optimize=optimize)
     except KeyError as exc:
         raise ModelError(f"Modèle inconnu: {name}.") from exc
 
