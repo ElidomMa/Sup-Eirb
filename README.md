@@ -21,6 +21,9 @@ pip install numpy pillow
 
 ## Avant de lancer
 
+Installer l'archive contenant les images et poids au lien suivant:
+https://drive.google.com/file/d/1MJ9mXltoeK1I3BxUPxHokiwjFx6JOSFz/view?usp=drive_link
+
 Ajouter les images de test dans `Images/test/` (dossiers `HR`, `LR_X2`, `LR_X3`, `LR_X4`).
 
 Ajouter les poids de chaque modèle :
