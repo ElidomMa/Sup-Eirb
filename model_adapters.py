@@ -90,13 +90,18 @@ class TorchProcessor:
             model.load_state_dict(state, strict=True)
         except Exception as exc:
             raise ModelError(f"Poids incompatibles pour {name} x{scale}: {exc}") from exc
+        self.use_half = self.device == "cuda"
         self.model = model.to(self.device).eval()
+        if self.use_half:
+            self.model.half()
         self.torch = torch
 
     def upscale(self, image: np.ndarray) -> tuple[np.ndarray, float]:
         _check_image(image)
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         tensor = self.torch.from_numpy(rgb).permute(2, 0, 1).float().div(255).unsqueeze(0)
+        if self.use_half:
+            tensor = tensor.half()
         started = time.perf_counter()
         with self.torch.inference_mode():
             output = self.model(tensor.to(self.device)).clamp(0, 1)

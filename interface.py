@@ -10,11 +10,11 @@ import time
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QAction, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                QLabel, QFileDialog, QLineEdit, QMainWindow, QMessageBox,
-                               QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
-                               QVBoxLayout, QWidget, QLayout)
+                               QPushButton, QSizePolicy, QSplitter, QStackedWidget,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from capture import CaptureError, FirefoxCapture, list_windows
 from game import GameView
@@ -302,20 +302,22 @@ class MainWindow(QMainWindow):
         self.url.setPlaceholderText("Adresse du jeu : https://...")
         open_button = QPushButton("Ouvrir")
         firefox_button = QPushButton("Capturer un jeu Firefox")
-        self.pause_button = QPushButton("Pause / Comparer la même image")
-        self.image_button = QPushButton("Ouvrir une image")
-        self.sequence_button = QPushButton("Ouvrir une séquence")
-        self.models_button = QPushButton("Changer les modèles")
+        self.pause_button = QPushButton("Temps réel")
+        self.image_button = QPushButton("Image")
+        self.sequence_button = QPushButton("Séquence")
+        self.models_button = QPushButton("Modèles")
         self.play_button = QPushButton("Lecture")
-        self.previous_button = QPushButton("Image précédente")
-        self.next_button = QPushButton("Image suivante")
-        self.restart_button = QPushButton("Recommencer")
+        self.previous_button = QPushButton("<")
+        self.previous_button.setToolTip("Image précédente")
+        self.next_button = QPushButton(">")
+        self.next_button.setToolTip("Image suivante")
+        self.restart_button = QPushButton("Début")
         self.playback_rate = QComboBox()
         self.playback_rate.addItems(["5 FPS", "10 FPS", "15 FPS", "30 FPS", "60 FPS"])
         self.playback_rate.setCurrentText("10 FPS")
-        self.expand_button = QPushButton("Comparaison agrandie")
-        self.diff_button = QPushButton("Afficher les différences")
-        self.zoom_reset_button = QPushButton("Réinitialiser le zoom")
+        self.expand_button = QAction("Agrandir", self)
+        self.diff_button = QAction("Différences", self)
+        self.zoom_reset_button = QAction("Zoom 1×", self)
         open_button.clicked.connect(self.open_url)
         self.url.returnPressed.connect(self.open_url)
         firefox_button.clicked.connect(self.open_firefox)
@@ -328,51 +330,42 @@ class MainWindow(QMainWindow):
         self.next_button.clicked.connect(self.next_sequence_frame)
         self.restart_button.clicked.connect(self.restart_sequence)
         self.playback_rate.currentTextChanged.connect(self.change_playback_rate)
-        self.expand_button.clicked.connect(self.toggle_expanded)
-        self.diff_button.clicked.connect(self.toggle_difference)
-        self.zoom_reset_button.clicked.connect(self.reset_zoom)
+        self.expand_button.triggered.connect(self.toggle_expanded)
+        self.diff_button.triggered.connect(self.toggle_difference)
+        self.zoom_reset_button.triggered.connect(self.reset_zoom)
         self.resolution = QComboBox()
         self.resolution.addItems(RESOLUTIONS)
-        self.resolution.setCurrentText("640 × 360")
+        self.resolution.setCurrentText("320 × 180")
         self.capture_rate = QComboBox()
         self.capture_rate.addItems(CAPTURE_RATES)
         self.capture_rate.setCurrentText("60 FPS")
         self.capture_rate.currentTextChanged.connect(self.change_capture_rate)
-        controls_layout = QHBoxLayout()
-        controls_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        more_button = QToolButton()
+        more_button.setText("Plus")
+        more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        more_button.setMenu(self._create_more_menu())
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Jeu :"))
+        source_row.addWidget(self.url, 1)
+        for widget in (open_button, firefox_button, self.pause_button, self.image_button,
+                       self.sequence_button):
+            source_row.addWidget(widget)
+
+        comparison_row = QHBoxLayout()
+        for widget in (self.models_button, self.play_button, self.previous_button,
+                       self.next_button, self.restart_button):
+            comparison_row.addWidget(widget)
+        comparison_row.addWidget(self.playback_rate)
+        self.playback_rate.setToolTip("Vitesse de lecture")
+        comparison_row.addWidget(self.resolution)
+        self.resolution.setToolTip("Résolution de traitement")
+        comparison_row.addWidget(self.capture_rate)
+        self.capture_rate.setToolTip("Fréquence de capture")
+        comparison_row.addWidget(more_button)
+        controls_layout = QVBoxLayout()
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.addWidget(QLabel("Adresse du jeu :"))
-        controls_layout.addWidget(self.url, 1)
-        controls_layout.addWidget(open_button)
-        controls_layout.addWidget(firefox_button)
-        controls_layout.addWidget(self.pause_button)
-        controls_layout.addWidget(self.image_button)
-        controls_layout.addWidget(self.sequence_button)
-        controls_layout.addWidget(self.models_button)
-        controls_layout.addWidget(self.play_button)
-        controls_layout.addWidget(self.previous_button)
-        controls_layout.addWidget(self.next_button)
-        controls_layout.addWidget(self.restart_button)
-        controls_layout.addWidget(QLabel("Lecture :"))
-        controls_layout.addWidget(self.playback_rate)
-        controls_layout.addWidget(self.expand_button)
-        controls_layout.addWidget(self.diff_button)
-        controls_layout.addWidget(self.zoom_reset_button)
-        controls_layout.addWidget(QLabel("Entrée :"))
-        controls_layout.addWidget(self.resolution)
-        controls_layout.addWidget(QLabel("Capture :"))
-        controls_layout.addWidget(self.capture_rate)
-        controls_widget = QWidget()
-        controls_widget.setLayout(controls_layout)
-        controls_widget.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        controls_scroll = QScrollArea()
-        controls_scroll.setWidget(controls_widget)
-        controls_scroll.setWidgetResizable(False)
-        controls_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        controls_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        controls_scroll.setMaximumHeight(controls_widget.sizeHint().height() + 4)
+        controls_layout.addLayout(source_row)
+        controls_layout.addLayout(comparison_row)
 
         self.left = ImagePanel(f"{model_names[0]} ×{scale}")
         self.right = ImagePanel(f"{model_names[1]} ×{scale}")
@@ -392,7 +385,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         root = QWidget()
         layout = QVBoxLayout(root)
-        layout.addWidget(controls_scroll)
+        layout.addLayout(controls_layout)
         layout.addWidget(splitter, 1)
         self.metrics = QLabel("Capture : -- FPS | Modèle 1 : -- FPS | Modèle 2 : -- FPS")
         layout.addWidget(self.metrics)
@@ -436,13 +429,22 @@ class MainWindow(QMainWindow):
         try:
             self.processors = (create_processor(model_names[0], scale),
                                create_processor(model_names[1], scale))
-            self.status.setText("Modèles prêts. Ouvrez une source pour commencer.")
+            devices = " / ".join(processor.device for processor in self.processors)
+            self.status.setText(f"Modèles prêts ({devices}). Ouvrez une source pour commencer.")
             self.timer.start(self._capture_interval())
         except ModelError as exc:
             self.status.setText(f"Erreur CUDA : {exc}")
         QShortcut(QKeySequence("F11"), self, activated=self.toggle_fullscreen)
         QTimer.singleShot(0, lambda: splitter.setSizes([max(1, self.height() // 3),
                                                          max(1, self.height() * 2 // 3)]))
+
+    def _create_more_menu(self):
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.addAction(self.expand_button)
+        menu.addAction(self.diff_button)
+        menu.addAction(self.zoom_reset_button)
+        return menu
 
     def _capture_interval(self) -> int:
         return round(1000 / CAPTURE_RATES[self.capture_rate.currentText()])
