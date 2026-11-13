@@ -6,12 +6,6 @@ import sys
 import time
 import torch
 
-try:
-    import torchvision.transforms.functional_tensor
-except ModuleNotFoundError:
-    from torchvision.transforms import functional as torchvision_functional
-    sys.modules['torchvision.transforms.functional_tensor'] = torchvision_functional
-
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.metrics import calculate_psnr, calculate_ssim
 from basicsr.utils.download_util import load_file_from_url
